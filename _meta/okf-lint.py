@@ -105,6 +105,8 @@ MIN_MENTION_LEN = 12
 # it belongs in `tags`. The floor keeps a young repo from calling its third mention "ambient".
 AMBIENT_MENTION_SHARE = 0.05
 AMBIENT_MENTION_FLOOR = 4
+# A run of word characters, as `\b` delimits them.
+WORD_RE = re.compile(r"\w+")
 
 
 # --------------------------------------------------------------------------------------
@@ -977,11 +979,12 @@ def _in_root(root, target):
     return full
 
 
-def repo_checks(root, docs, report, vocab, scope=None):
+def repo_checks(root, docs, report, vocab, scope=None, suggest=True):
     """docs: {rel_path: frontmatter}. Cross-document invariants.
 
     `scope` holds paths named on the command line. They are checked last so a collision is
     reported against the incoming document rather than against the one already committed.
+    `suggest=False` when no suggestion will be printed: none are computed.
     """
     titles, aliases = {}, {}
     scope_set = set(scope or ())
@@ -1012,7 +1015,7 @@ def repo_checks(root, docs, report, vocab, scope=None):
     _split_checks(root, docs, report)
     # In targeted mode, suggest only for the named files — the pre-commit hook should talk
     # about what you just changed, not about the whole repo.
-    _suggest_links(docs, report, scope)
+    _suggest_links(docs, report, scope if suggest else [])
 
 
 def _tag_checks(docs, report):
@@ -1199,40 +1202,81 @@ def _suggest_links(docs, report, scope=None):
         else:
             names[name] = owners[0]
 
+    # Only the named documents get suggestions (all of them when none are named); with nothing
+    # to advise on, the body scan below would be work nobody reads.
+    advised = sorted(rel for rel in (scope if scope is not None else live) if rel in live)
+    if not advised:
+        return
+
     # Longest first, so a long title is not also read as a mention of a shorter one inside it.
     ordered = sorted(names, key=len, reverse=True)
+    rank = {n: i for i, n in enumerate(ordered)}
     patterns = {n: re.compile(r"\b%s\b" % re.escape(n)) for n in ordered}
 
-    def mentions(body):
-        """Names appearing in `body`, each match consumed by the longest name that claims it."""
+    # Scanning every body once per name is O(documents x names x body) — 1,000 documents took
+    # ten minutes. A match of `\bname\b` contains each of the name's word runs as a whole word
+    # of the body, so a body lacking any of them cannot mention the name. Index every name
+    # under its rarest word; each body then looks up only its own words.
+    words = {rel: set(WORD_RE.findall((fm.get("_body") or "").lower()))
+             for rel, fm in live.items()}
+    df = {}
+    for ws in words.values():
+        for w in ws:
+            df[w] = df.get(w, 0) + 1
+    name_words, by_word, wordless = {}, {}, []
+    for name in ordered:
+        nw = set(WORD_RE.findall(name))
+        name_words[name] = nw
+        if nw:
+            by_word.setdefault(min(nw, key=lambda w: (df.get(w, 0), w)), []).append(name)
+        else:
+            wordless.append(name)
+
+    cache = {}
+
+    def mentions(rel):
+        """Names appearing in `rel`'s body, each match consumed by the longest name that
+        claims it. Equal to running every name's pattern over the body, longest name first."""
+        if rel in cache:
+            return cache[rel]
+        body = (live[rel].get("_body") or "").lower()
+        ws = words[rel]
+        cands = list(wordless)
+        for w in ws:
+            cands += [n for n in by_word.get(w, ()) if name_words[n] <= ws]
         hits, spans = [], []
-        for name in ordered:
-            for m in patterns[name].finditer(body):
-                if any(s <= m.start() and m.end() <= e for s, e in spans):
-                    continue
-                spans.append((m.start(), m.end()))
-                hits.append(name)
-                break
+        for name in sorted(cands, key=rank.__getitem__):
+            pat, size = patterns[name], len(name)
+            # The matches `pat.finditer(body)` yields, left to right: the pattern is the literal
+            # name between word boundaries, so a match is an occurrence where the boundaries hold.
+            i = body.find(name)
+            while i >= 0:
+                if not pat.match(body, i):
+                    i = body.find(name, i + 1)
+                elif any(s <= i and i + size <= e for s, e in spans):
+                    i = body.find(name, i + size)
+                else:
+                    spans.append((i, i + size))
+                    hits.append(name)
+                    break
+        cache[rel] = hits
         return hits
 
     # A name the whole repo uses is a subject, and subjects are `tags`. Proposing it as a link
     # nine times over teaches the reader to stop reading suggestions.
     threshold = max(AMBIENT_MENTION_FLOOR, int(len(live) * AMBIENT_MENTION_SHARE))
     mentioned_in = {}
-    for rel, fm in live.items():
-        for name in mentions((fm.get("_body") or "").lower()):
+    for rel in live:
+        for name in mentions(rel):
             if names[name] != rel:
                 mentioned_in.setdefault(name, []).append(rel)
     ambient = {n for n, where in mentioned_in.items() if len(where) > threshold}
 
-    for rel in sorted(scope if scope is not None else live):
-        fm = live.get(rel)
-        if not fm:
-            continue
+    for rel in advised:
+        fm = live[rel]
         entries = _entries(fm)
         linked = {str(e["path"]).lstrip("/") for e in entries if e.get("path")}
         has_parent = any(e.get("rel") == REL_SINGLETON for e in entries)
-        body = (fm.get("_body") or "").lower()
         found = []                                    # (target, rel, why)
 
         # 1 — the body already links it; the frontmatter has not caught up.
@@ -1268,7 +1312,7 @@ def _suggest_links(docs, report, scope=None):
                     found.append((sib, None, "cites the same source"))
 
         # 5 — the body names another document outright.
-        for name in mentions(body):
+        for name in mentions(rel):
             target = names[name]
             if target != rel and target not in linked and name not in ambient:
                 found.append((target, None, "the body mentions %r" % name))
@@ -1465,7 +1509,9 @@ def main(argv=None):
                 continue
             docs[rel] = validate_doc(rel, text, report, vocab, size)
 
-        repo_checks(root, docs, report, vocab, sorted(targets) if targeted else None)
+        # --quiet prints errors only, unless --json or --suggest asks for the suggestions.
+        repo_checks(root, docs, report, vocab, sorted(targets) if targeted else None,
+                    suggest=args.json or args.suggest or not args.quiet)
         if targeted:
             report.warnings = [w for w in report.warnings if w["path"] in targets]
 

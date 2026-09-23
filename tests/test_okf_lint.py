@@ -844,5 +844,37 @@ class TestLinearTime(LintCase):
                 self.lint()
                 self.assertLess(time.monotonic() - t, 2.0)
 
+    SCALE_DOCS = 800
+
+    def write_scale_repo(self):
+        """SCALE_DOCS more documents, each titled uniquely and naming three others in its body."""
+        import random
+        rnd = random.Random(11)
+        vocab = ("garden budget travel insurance review plan notes kitchen repair school "
+                 "savings schedule checklist renewal").split()
+        titles = ["Scale topic %04d %s" % (i, rnd.choice(vocab)) for i in range(self.SCALE_DOCS)]
+        for i, title in enumerate(titles):
+            prose = " ".join(rnd.choice(vocab) for _ in range(300))
+            named = ", ".join(rnd.choice(titles) for _ in range(3))
+            self.write("concept/scale-%04d.md" % i,
+                       "---\ntype: concept\ntitle: %s\ndescription: Synthetic scale-test document."
+                       "\nstatus: draft\narea: home\n---\n\n# %s\n\n%s\n\nSee also %s.\n\n%s\n"
+                       % (title, title, prose, named, prose))
+
+    def test_link_suggestions_scale_linearly(self):
+        """Mention matching once scanned every body once per title — O(documents² × body): 1,000
+        documents took ten minutes, past the PR check's timeout. This repo took ~50 s that way;
+        it now takes about a second."""
+        import time
+        self.write_scale_repo()
+        t = time.monotonic()
+        r = self.lint()
+        elapsed = time.monotonic() - t
+        self.assertClean(r)
+        self.assertEqual(r["checked"], 7 + self.SCALE_DOCS)
+        self.assertTrue(any("the body mentions 'scale topic" in s["message"]
+                            for s in r["suggestions"]), "the scale repo produced no mentions")
+        self.assertLess(elapsed, 15.0)
+
 if __name__ == "__main__":
     unittest.main()
