@@ -1,0 +1,453 @@
+# okf-lint — the write gate for this knowledge base (conventions.md §7-§8).
+#
+#   Pull request  -> job `okf-lint`: lint the tree the PR would produce, post the required
+#                    `okf-lint` commit status, and explain any failure in ONE PR comment. Errors
+#                    cover the whole tree; warnings only the documents the PR changes.
+#                 -> job `merge`: squash-merge when green, same-repo, not draft, no `hold`
+#                    label, and every changed path is content (a type folder or `_originals/`);
+#                    otherwise say once why it is held. The `obsidian` branch's PR is merged with
+#                    a merge commit and the branch is kept (conventions.md §11).
+#                 -> job `obsidian`: after a merge, bring the `obsidian` branch up to date
+#                    (obsidian.yml; a no-op without that branch). Needed here because a merge made
+#                    with this workflow's token starts no `push` run.
+#   Manual run with `pr` -> the same two jobs for that PR. This is how obsidian.yml starts the check
+#                    on a PR it opened or updated: changes made with the workflow token raise no
+#                    pull_request event, and workflow_dispatch is the one event that token may start.
+#   Push to main / manual run without `pr` -> job `okf-lint-branch`: whole-repo lint of the branch.
+#
+# SECURITY MODEL. `pull_request_target` runs THIS file and the linter from the BASE branch, so a
+# pull request cannot change the CODE that judges it. The vocabularies are different: they are read
+# from the pull request's own `_meta/conventions.md`, so a vocabulary edit is judged by itself. That
+# is safe because `_meta/` is a governance path — such a PR can pass the check but is never merged
+# automatically; a person merges it. The pull request's files are fetched into a separate folder
+# (`pr/`) and only ever READ: nothing from it is executed, sourced, installed, or used as a git
+# hook, and no credential is left in either checkout. No step ever runs a program with `pr/` as
+# its working directory (git is pointed at it with `git -C pr`), and every Python runs as
+# `python3 -I` (isolated: neither the working directory, the script's folder nor PYTHON*
+# variables reach its import path), so a `json.py` or similar in the pull request is never
+# imported. The PR's file NAMES are data too: they reach
+# the linter only as separate argv entries after `--` (a NUL-delimited list, read one name at a
+# time), never through eval, word splitting, or the environment file. The token is handed only to
+# the steps that call the GitHub API, never to the step that reads PR content. A manual run with `pr` keeps all of
+# this: it runs only from the default branch, and reads the PR's number, head, base and labels
+# from the API instead of from an event.
+#
+# NO PATH FILTERS, on purpose: a required check that is filtered out never reports, and the PR
+# then waits for it forever.
+
+name: okf-lint
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled, ready_for_review]
+    # `edited` covers a changed base branch (the verdict and the merge target change with it).
+  push:
+    branches: [main]   # the default branch; rename here if yours is not `main`
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to check (and merge if eligible). Empty: lint the branch."
+        required: false
+        default: ""
+
+# Nothing by default; each job asks for exactly what it uses.
+permissions: {}
+
+# One run per PR (or branch) at a time; a newer event supersedes an older run, so the status and
+# comment always describe the latest commit and labels.
+concurrency:
+  group: okf-lint-${{ github.event.pull_request.number || inputs.pr || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  okf-lint:
+    name: lint pull request
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'workflow_dispatch' && inputs.pr != '' &&
+      github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read        # fetch the base branch and the PR commits (private repos need this)
+      pull-requests: write  # create/update the one lint comment
+      statuses: write       # the required `okf-lint` commit status on the PR head
+    outputs:
+      pr: ${{ steps.pr.outputs.number }}
+      head_sha: ${{ steps.prepare.outputs.head_sha }}
+      base_sha: ${{ steps.prepare.outputs.base_sha }}
+      governance: ${{ steps.prepare.outputs.governance }}
+      governance_paths: ${{ steps.prepare.outputs.governance_paths }}
+    env:
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # Content paths (conventions.md §8): the nine type folders and `_originals/`. Any changed
+      # path NOT matching this is a governance path, and the PR is held for a person — so root
+      # files, `tests/` and any new top-level folder are governance without being listed.
+      CONTENT_RE: '^(concept|procedure|reference|specification|decision|profile|analysis|narrative|record|_originals)/'
+      # Belt and braces for `python3 -I`: no Python in this job puts its working directory or the
+      # script's folder on the import path.
+      PYTHONSAFEPATH: '1'
+    steps:
+      # Sets PR, BASE_REF, EVENT_HEAD_SHA, ALLOW_LOSS and OBSIDIAN for the steps below — from the
+      # event, or for a manual run from the API. Only numbers, SHAs, true/false and the base branch
+      # name are written, so nothing PR-controlled reaches the environment file.
+      - name: Identify the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr }}
+          EV_PR: ${{ github.event.pull_request.number }}
+          EV_BASE: ${{ github.event.pull_request.base.ref }}
+          EV_HEAD: ${{ github.event.pull_request.head.sha }}
+          EV_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EV_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          EV_LOSS: ${{ contains(github.event.pull_request.labels.*.name, 'allow-loss') }}
+        run: |
+          set -eu
+          if [ "$EVENT" = pull_request_target ]; then
+            pr=$EV_PR; base=$EV_BASE; head=$EV_HEAD; loss=$EV_LOSS
+            [ "$EV_HEAD_REPO" = "$REPO" ] && [ "$EV_HEAD_REF" = obsidian ] && obs=true || obs=false
+          else
+            case $INPUT_PR in ''|*[!0-9]*) echo "::error::'pr' must be a pull request number"; exit 1 ;; esac
+            info=$(gh pr view "$INPUT_PR" --repo "$REPO" \
+                     --json state,baseRefName,headRefOid,headRefName,isCrossRepository,labels)
+            if [ "$(echo "$info" | jq -r .state)" != OPEN ]; then
+              echo "::error::Pull request #$INPUT_PR is not open; nothing to check."; exit 1
+            fi
+            pr=$INPUT_PR
+            base=$(echo "$info" | jq -r .baseRefName)
+            head=$(echo "$info" | jq -r .headRefOid)
+            loss=$(echo "$info" | jq '[.labels[].name] | index("allow-loss") != null')
+            obs=$(echo "$info" | jq '.isCrossRepository == false and .headRefName == "obsidian"')
+          fi
+          printf 'PR=%s\nBASE_REF=%s\nEVENT_HEAD_SHA=%s\nALLOW_LOSS=%s\nOBSIDIAN=%s\n' \
+            "$pr" "$base" "$head" "$loss" "$obs" >> "$GITHUB_ENV"
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+
+      # The ruleset requires the commit STATUS `okf-lint` (not this job's check run, which for
+      # pull_request_target is not reliably attached to the PR head). Pending first, so a run
+      # that dies early blocks the merge instead of leaving no signal at all.
+      - name: Mark the check as running
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$REPO/statuses/$EVENT_HEAD_SHA" \
+            -f state=pending -f context=okf-lint \
+            -f description="Checking the documents in this pull request" \
+            -f target_url="$RUN_URL" > /dev/null
+
+      - name: Check out the linter from the base branch (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: base
+          persist-credentials: false
+
+      # DATA ONLY. allow-unsafe-pr-checkout is required for PRs from forks: checkout v7 refuses
+      # them under pull_request_target because running their code here would be unsafe. Nothing
+      # below runs code from `pr/`; the only program run against it is base/_meta/okf-lint.py
+      # (plus read-only git), and symlinks are refused so reading a file cannot reach outside it.
+      # fetch-depth 0: the merge and the --base comparison need the base branch history.
+      - name: Fetch the pull request as data (never executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/pull/${{ env.PR }}/head
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+          allow-unsafe-pr-checkout: true
+
+      # Lint the tree the merge would produce (PR head merged with the base branch as it is
+      # now), so the check sees what will actually land: documents added to main since the branch
+      # was cut are neither "deleted" by the PR nor missed by the uniqueness and link checks.
+      - name: Build the would-be merge result
+        id: prepare
+        env:
+          GIT_LFS_SKIP_SMUDGE: '1'
+        # Fails (and so holds the PR) on any git error: an empty or partial answer must never
+        # read as "no governance paths".
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/lint.json"
+          # git runs with `-C pr`; nothing here runs with pr/ as its working directory.
+          head_sha=$(git -C pr rev-parse HEAD)
+          base_sha=$(git -C pr rev-parse --verify "refs/remotes/origin/$BASE_REF^{commit}")
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+          fail() {  # a synthetic lint result, in okf-lint's --json shape
+            python3 -I -c 'import json,sys; print(json.dumps({"ok": False, "checked": 0, "errors": [{"path": sys.argv[1], "field": None, "message": sys.argv[2]}], "warnings": [], "suggestions": []}))' "$1" "$2" > "$out"
+            echo "precheck=failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if ! git -C pr -c user.name=okf-lint -c user.email=okf-lint@invalid \
+                 merge --no-commit --no-ff --no-edit "$base_sha" > /dev/null 2>&1; then
+            git -C pr merge --abort > /dev/null 2>&1 || true
+            if [ "$OBSIDIAN" = true ]; then
+              fail "(merge)" "A note changed in Obsidian was also changed on '$BASE_REF' by another route, in the same place, so they cannot be combined automatically. On this pull request click 'Resolve conflicts', keep the text you want, then 'Mark as resolved' and 'Commit merge'; the check re-runs and the vault gets the result on its next sync. If GitHub says the conflict is too complex for the web editor, it needs someone with git (or Claude Code) to merge '$BASE_REF' into 'obsidian'."
+            fi
+            fail "(merge)" "This pull request conflicts with changes already on '$BASE_REF'. Update the branch (on GitHub: 'Update branch' or 'Resolve conflicts'), then the check re-runs."
+          fi
+
+          links=$(find pr -path pr/.git -prune -o -type l -print | sed 's|^pr/||' | head -20 || true)
+          if [ -n "$links" ]; then
+            fail "$(echo "$links" | head -1)" "Symbolic links are not allowed in this repository. Replace each with a normal file: $(echo "$links" | tr '\n' ' ')"
+          fi
+
+          # To a file first, so a git failure stops the step instead of yielding an empty list.
+          git -C pr diff --name-only --no-renames -z "$base_sha" > "$RUNNER_TEMP/changed.z"
+          changed=$(tr '\0' '\n' < "$RUNNER_TEMP/changed.z")
+          # Governance = any changed path outside the content folders. Decided on the full list;
+          # an odd name (e.g. one containing a newline) splits into lines that fail safe to governance.
+          gov_all=$(printf '%s\n' "$changed" | grep -Ev -e "$CONTENT_RE" -e '^$' || true)
+          if [ -n "$gov_all" ]; then echo "governance=true"; else echo "governance=false"; fi >> "$GITHUB_OUTPUT"
+          # One line, and only harmless characters: these names end up in a PR comment.
+          gov=$(printf '%s\n' "$gov_all" | head -20 | tr '\n' ' ' | LC_ALL=C tr -cd 'A-Za-z0-9._/ -' || true)
+          echo "governance_paths=$gov" >> "$GITHUB_OUTPUT"
+
+          # The PR's changed documents that still exist, NUL-delimited, for the lint step to name.
+          # Written to a file, never to the environment or an output: the names are PR-controlled.
+          git -C pr diff --name-only --no-renames --diff-filter=d -z "$base_sha" -- '*.md' \
+            > "$RUNNER_TEMP/docs.z"
+          echo "precheck=ok" >> "$GITHUB_OUTPUT"
+
+      # The one step that reads PR content: the BASE linter, pointed at pr/ as data. No token here.
+      # Value sets are read from pr/_meta/conventions.md (the tree being judged) — a PR that edits
+      # them touches a governance path, so it can pass lint but is never merged automatically.
+      # The PR's changed documents are named after `--` (prefixed `pr/`, one argv entry each), so
+      # the comment's warnings are about this PR, not about files it never touched. The verdict
+      # does not depend on the names: the linter reports every error in the tree regardless
+      # (conventions.md §7). No changed document -> no names; the Report step then keeps only the
+      # allowed-loss warnings, which are about this PR by construction.
+      - name: Lint (base linter, PR tree as data)
+        id: lint
+        if: steps.prepare.outputs.precheck == 'ok'
+        env:
+          BASE_SHA: ${{ steps.prepare.outputs.base_sha }}
+        run: |
+          set -u
+          if [ "$ALLOW_LOSS" = "true" ]; then loss=--allow-loss; else loss=; fi
+          set --    # one argv entry per NUL-terminated name; nothing is split, globbed or evaluated
+          while IFS= read -r -d '' name; do set -- "$@" "pr/$name"; done < "$RUNNER_TEMP/docs.z"
+          if [ $# -gt 0 ]; then set -- -- "$@"; narrowed=true; else narrowed=false; fi
+          echo "narrowed=$narrowed" >> "$GITHUB_OUTPUT"
+          python3 -I base/_meta/okf-lint.py --root pr --base "$BASE_SHA" $loss --json "$@" \
+            > "$RUNNER_TEMP/lint.json" || true
+          echo "--- okf-lint result ---"; cat "$RUNNER_TEMP/lint.json"
+
+      # Publish the verdict: the required status, and one comment (created on first failure,
+      # updated in place afterwards, marked resolved once the check passes). Fails the job when
+      # the lint failed, so the merge job does not run.
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+          GOVERNANCE: ${{ steps.prepare.outputs.governance }}
+          NARROWED: ${{ steps.lint.outputs.narrowed }}
+        run: |
+          set -u
+          body="$RUNNER_TEMP/comment.md"
+          python3 -I - "$RUNNER_TEMP/lint.json" "$body" > "$RUNNER_TEMP/verdict" <<'PY'
+          import json, sys, os
+          src, dst = sys.argv[1], sys.argv[2]
+          try:
+              r = json.load(open(src))
+              errors, warnings = r["errors"], r["warnings"]
+          except Exception as e:  # the linter crashed or printed nothing: a check fault, not a verdict
+              r, errors, warnings = None, [], []
+          if os.environ.get("NARROWED") != "true":
+              # No changed document was named, so warnings are repo-wide advice about files this PR
+              # never touched. Keep only the allowed losses (--allow-loss): its own deletions and cuts.
+              warnings = [w for w in warnings if w.get("field") in ("deleted", "shrank", "original")]
+          def code(s):  # PR-controlled text, shown as a code span: nothing in it renders (no
+              # HTML, links, images, @-mentions or #123 references); it cannot close the span early
+              s = str(s if s is not None else "").replace("`", "'").replace("\r", " ").replace("\n", " ")
+              return "`%s`" % (s if s.strip() else "(empty)")
+          run, sha = os.environ["RUN_URL"], os.environ["HEAD_SHA"][:7]
+          lines = ["<!-- okf-lint -->"]
+          if r is None:
+              lines += ["### The document check could not run",
+                        "", "This is a problem with the check, not with your documents. "
+                        "Re-run it from the [check log](%s)." % run]
+              verdict = "error"
+          elif r["ok"]:
+              lines += ["### Document check: passed",
+                        "", "The problems reported earlier are fixed (commit `%s`)." % sha]
+              verdict = "success"
+          else:
+              n = len(errors)
+              where_fix = ("**in Obsidian**; the vault's next sync updates this pull request"
+                           if os.environ.get("OBSIDIAN") == "true" else
+                           "**on this same branch** (edit the file and commit again)")
+              lines += ["### Document check: %d problem%s to fix before this can merge"
+                        % (n, "" if n == 1 else "s"), "",
+                        "Nothing has been merged. Fix each item below %s; the check re-runs "
+                        "by itself." % where_fix, ""]
+              for e in errors[:50]:
+                  where = code(e["path"]) + (" — %s" % code(e["field"]) if e.get("field") else "")
+                  lines.append("- %s: %s" % (where, code(e["message"])))
+              if n > 50:
+                  lines.append("- …and %d more; see the [check log](%s)." % (n - 50, run))
+              if any(e.get("field") in ("deleted", "shrank", "original") for e in errors):
+                  lines += ["", "Some items are about **removed content** (a deleted or renamed "
+                            "document, a body cut by 25% or more, or an edited original). If that "
+                            "loss is intended, add the label **`allow-loss`** to this pull request."]
+              verdict = "failure"
+          if warnings and r is not None:
+              lines += ["", "<details><summary>%d warning(s) about this pull request's documents — "
+                        "advice only, these do not block</summary>" % len(warnings), ""]
+              for w in warnings[:30]:
+                  lines.append("- %s: %s" % (code(w["path"]), code(w["message"])))
+              lines += ["", "</details>"]
+          lines += ["", "<sub>Checked commit `%s` · [check log](%s)</sub>" % (sha, run)]
+          open(dst, "w").write("\n".join(lines) + "\n")
+          print(verdict)
+          PY
+          verdict=$(cat "$RUNNER_TEMP/verdict")
+          case $verdict in
+            success) desc="All documents pass" ;;
+            failure) desc="Problems found - see the pull request comment" ;;
+            *)       verdict=error; desc="The check could not run - re-run it" ;;
+          esac
+
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$verdict" -f context=okf-lint -f description="$desc" \
+            -f target_url="$RUN_URL" > /dev/null
+          touch "$RUNNER_TEMP/status-posted"
+
+          # Upsert the ONE comment: ours is the bot comment starting with the marker.
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                 --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- okf-lint -->"))) | .id' | head -1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -F body=@"$body" > /dev/null
+          elif [ "$verdict" != success ]; then
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -F body=@"$body" > /dev/null
+          fi
+
+          [ "$verdict" = success ]
+
+      # Only if a step above broke before a verdict was posted: never leave the status pending.
+      - name: Report a broken check
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha || env.EVENT_HEAD_SHA }}
+        run: |
+          [ -f "$RUNNER_TEMP/status-posted" ] && exit 0
+          [ -n "$HEAD_SHA" ] || exit 0    # failed before the PR was identified: no commit to mark
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=error -f context=okf-lint \
+            -f description="The check could not run - re-run it" \
+            -f target_url="$RUN_URL" > /dev/null
+
+  merge:
+    name: merge if eligible
+    needs: okf-lint
+    if: needs.okf-lint.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write       # merge into the default branch and delete the head branch
+      pull-requests: write  # merge the PR; create/update the one "held" comment
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ needs.okf-lint.outputs.pr }}
+      HEAD_SHA: ${{ needs.okf-lint.outputs.head_sha }}
+      GOVERNANCE: ${{ needs.okf-lint.outputs.governance }}
+      GOVERNANCE_PATHS: ${{ needs.okf-lint.outputs.governance_paths }}
+    # No checkout: this job only calls the GitHub API.
+    steps:
+      - name: Merge, or say why not
+        id: merge
+        run: |
+          set -u
+          # Read the PR as it is NOW — labels, draft state and head may have changed since the event.
+          pr=$(gh pr view "$PR" --repo "$REPO" \
+                 --json state,isDraft,isCrossRepository,headRefOid,headRefName,labels,title)
+          state=$(echo "$pr" | jq -r .state)
+          head=$(echo "$pr" | jq -r .headRefOid)
+          if [ "$state" != OPEN ]; then echo "PR is $state; nothing to do."; exit 0; fi
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "A newer commit ($head) arrived; its own run decides."; exit 0
+          fi
+
+          # The Obsidian vault's branch (conventions.md §11): merge commit, branch kept.
+          obsidian=$(echo "$pr" | jq '.isCrossRepository == false and .headRefName == "obsidian"')
+
+          # Fail closed: each test below lets the PR merge only on an exact `false`, so a missing or
+          # unexpected value (an API or step fault) holds it for a person.
+          cross=$(echo "$pr" | jq -r .isCrossRepository)
+          draft=$(echo "$pr" | jq -r .isDraft)
+          held=$(echo "$pr" | jq '[.labels[].name] | index("hold") != null')
+          reasons=""
+          add() { reasons="$reasons
+          - $1"; }
+          [ "$cross" != false ] &&
+            add "It comes from a fork. A person with write access reviews and merges it."
+          [ "$draft" != false ] &&
+            add "It is a draft. Mark it **Ready for review** to let it merge."
+          [ "$held" != false ] &&
+            add "It has the **hold** label. Remove the label to let it merge."
+          if [ "$GOVERNANCE" != true ] && [ "$GOVERNANCE" != false ]; then
+            add "The check could not tell which files it changes, so a person reviews and merges it. Re-running the check may clear this."
+          elif [ "$GOVERNANCE" = true ] && [ "$obsidian" = true ]; then
+            add "It has files outside the document folders (\`${GOVERNANCE_PATHS% }\`) — often a new note that landed at the top of the vault, such as \`Untitled.md\` or a daily note. In Obsidian, move each into the right document folder (such as \`concept/\`) or delete it; the vault's next sync updates this pull request and it merges by itself. If you did mean to change the rules or setup of this knowledge base, review the diff and merge it yourself with **Create a merge commit** (not squash)."
+          elif [ "$GOVERNANCE" = true ]; then
+            add "It changes files outside the document folders (\`${GOVERNANCE_PATHS% }\`) — the rules or setup of this knowledge base. Those changes are merged by a person: review the diff, then **Squash and merge**."
+          fi
+
+          if [ -z "$reasons" ]; then
+            # --match-head-commit: refuse if the branch moved after it was checked.
+            if [ "$obsidian" = true ]; then
+              gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA" \
+                --subject "$(echo "$pr" | jq -r .title) (#$PR)" || exit 1
+            else
+              gh pr merge "$PR" --repo "$REPO" --squash --delete-branch \
+                --match-head-commit "$HEAD_SHA" || exit 1
+            fi
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          body=$(printf '%s\n' "<!-- okf-merge -->" "### Passed the check, held for a person" "" \
+                 "The documents pass, but this pull request was not merged automatically:" "$reasons")
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                 --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- okf-merge -->"))) | .id' | head -1)
+          if [ -z "$id" ]; then
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$body" > /dev/null
+          elif [ "$(gh api "repos/$REPO/issues/comments/$id" --jq .body)" != "$body" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" > /dev/null
+          fi
+          echo "Held:$reasons"
+
+  # A merge made with this workflow's token starts no `push` run, so the obsidian branch is brought
+  # up to date from here (obsidian.yml does the same on a person's merge).
+  obsidian:
+    name: update the obsidian branch
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: ./.github/workflows/obsidian.yml
+
+  okf-lint-branch:
+    name: lint whole repo
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.pr == '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Stdlib-only Python: no setup-python, no pip install — identical to the local hook.
+      - name: Lint
+        run: python3 -I _meta/okf-lint.py

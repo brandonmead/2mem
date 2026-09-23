@@ -1,0 +1,5 @@
+__pycache__/
+.DS_Store
+# Obsidian: per-device vault state (setup/obsidian/ holds the starter config) and its local trash.
+.obsidian/
+.trash/

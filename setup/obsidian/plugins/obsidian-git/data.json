@@ -1,0 +1,13 @@
+{
+  "autoSaveInterval": 10,
+  "autoBackupAfterFileChange": true,
+  "autoPullInterval": 10,
+  "autoPullOnBoot": true,
+  "pullBeforePush": true,
+  "disablePush": false,
+  "syncMethod": "merge",
+  "autoCommitMessage": "obsidian: vault backup {{date}}",
+  "commitMessage": "obsidian: vault backup {{date}}",
+  "commitDateFormat": "YYYY-MM-DD HH:mm",
+  "disablePopupsForNoChanges": true
+}

@@ -1,0 +1,56 @@
+# tests — run the repository's own tests (tests/): the linter's behaviour, and
+# tests/test_boundary.py, which keeps the template self-contained (nothing outside the document
+# folders may link to anyone's knowledge base or to another repository).
+#
+# NOT a required check. The write gate is okf-lint.yml; this is information for the person who
+# reviews a rule or code change (those pull requests are always held for a person — conventions.md
+# §8). Because it is not required, path filters are safe here: a filtered-out run blocks nothing.
+# In an instance it therefore runs only when the rules or code change, never for document edits.
+#
+# `pull_request` (not `_target`): the pull request's own code and tests run, with a read-only
+# token and no secrets, so a fork gains nothing by changing them.
+
+name: tests
+
+on:
+  pull_request:
+    paths-ignore:   # the document folders — keep in step with CONTENT_RE in okf-lint.yml
+      - 'concept/**'
+      - 'procedure/**'
+      - 'reference/**'
+      - 'specification/**'
+      - 'decision/**'
+      - 'profile/**'
+      - 'analysis/**'
+      - 'narrative/**'
+      - 'record/**'
+      - '_originals/**'
+  push:
+    branches: [main]   # the default branch; rename here if yours is not `main`
+    paths-ignore:
+      - 'concept/**'
+      - 'procedure/**'
+      - 'reference/**'
+      - 'specification/**'
+      - 'decision/**'
+      - 'profile/**'
+      - 'analysis/**'
+      - 'narrative/**'
+      - 'record/**'
+      - '_originals/**'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: run tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Stdlib-only Python: no setup-python, no pip install.
+      - name: Run tests
+        run: python3 -I -m unittest discover -s tests

@@ -1,0 +1,126 @@
+# obsidian — keeps the `obsidian` branch (the Obsidian vault's branch) and its one pull request in
+# step with the default branch (conventions.md §11). A no-op in a repository with no `obsidian`
+# branch, so it is harmless where nobody edits in Obsidian.
+#
+#   Push to `obsidian` (the vault synced)    -> make sure one PR `obsidian` -> default branch is open.
+#   Push to main (a person merged a PR)      -> bring `obsidian` up to date.
+#   Called by okf-lint.yml after a merge     -> the same; that merge was made with the workflow's
+#                                               own token, which starts no `push` run.
+#
+# Bringing `obsidian` up to date: fast-forward it when everything on it is already merged;
+# otherwise merge the default branch into it (GitHub's merge API). Nothing is ever force-pushed,
+# so no vault commit is lost. If both sides changed the same lines, nothing is merged: the check
+# on the open PR reports the conflict and says what to do.
+#
+# Changes made with the workflow's token raise no pull_request event, so when this job opens the
+# PR or moves its head it starts the okf-lint check itself (workflow_dispatch is the one event that
+# token may start). The check posts the required `okf-lint` status on the PR's head either way.
+#
+# API calls only: nothing is checked out, and nothing from any branch is read or run.
+
+name: obsidian
+
+on:
+  push:
+    branches: [main, obsidian]   # the default branch (rename if yours is not `main`) and the vault's
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  sync:
+    name: sync the obsidian branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # One sync at a time, never cancelled half-way; each run re-reads the branches, so a queued
+    # run that replaces an older queued one loses nothing.
+    concurrency:
+      group: obsidian-sync
+      cancel-in-progress: false
+    permissions:
+      contents: write       # move the obsidian branch; merge the default branch into it
+      pull-requests: write  # find or open the vault's pull request
+      actions: write        # start the okf-lint check on that pull request
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      BRANCH: obsidian
+    steps:
+      - name: Bring obsidian up to date and make sure its pull request is checked
+        run: |
+          set -eu
+          err="$RUNNER_TEMP/err"
+          if ! gh api "repos/$REPO/branches/$BRANCH" --silent 2>"$err"; then
+            if grep -q "HTTP 404" "$err"; then
+              echo "No '$BRANCH' branch: this repository is not edited in Obsidian. Nothing to do."
+              exit 0
+            fi
+            cat "$err" >&2; exit 1
+          fi
+          default=$(gh api "repos/$REPO" --jq .default_branch)
+          main=$(gh api "repos/$REPO/git/ref/heads/$default" --jq .object.sha)
+          state=$(gh api "repos/$REPO/compare/$default...$BRANCH" --jq .status)
+          echo "'$BRANCH' compared with '$default': $state"
+
+          check=false; new=""
+          [ "$EVENT" = workflow_dispatch ] && check=true
+          case $state in
+            identical)
+              exit 0 ;;
+            behind)   # everything on obsidian is merged: fast-forward, never force
+              if gh api --method PATCH "repos/$REPO/git/refs/heads/$BRANCH" \
+                   -f sha="$main" -F force=false --silent 2>"$err"; then
+                echo "Fast-forwarded '$BRANCH' to $main."
+              elif grep -qi "fast.forward" "$err"; then
+                echo "'$BRANCH' moved during this run (the vault pushed); the run for that push syncs it."
+              else
+                cat "$err" >&2; exit 1
+              fi
+              exit 0 ;;
+            ahead)    # vault changes waiting; the default branch has nothing new for them
+              ;;
+            diverged) # both moved: merge the default branch into obsidian
+              if out=$(gh api --method POST "repos/$REPO/merges" -f base="$BRANCH" -f head="$main" \
+                         -f commit_message="Merge $default into $BRANCH (changes made elsewhere)" \
+                         2>"$err"); then
+                new=$(printf '%s' "$out" | jq -r '.sha // empty')
+                [ -n "$new" ] && { echo "Merged '$default' into '$BRANCH': $new"; check=true; }
+              elif grep -q "HTTP 409" "$err"; then
+                echo "Conflict: '$BRANCH' and '$default' changed the same lines. Left as it is;"
+                echo "the check on the pull request explains how to resolve it."
+                check=true
+              else
+                cat "$err" >&2; exit 1
+              fi ;;
+            *)
+              echo "Unexpected comparison status '$state'." >&2; exit 1 ;;
+          esac
+
+          # Exactly one open PR from this repo's obsidian branch.
+          pr=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$BRANCH&base=$default&state=open" \
+                 --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            body="Changes made in the Obsidian vault. This pull request is opened and kept up to date automatically, and merges by itself (with a merge commit, keeping the \`$BRANCH\` branch) when the document check passes. Do not delete the \`$BRANCH\` branch: the vault syncs through it."
+            pr=$(gh api --method POST "repos/$REPO/pulls" -f head="$BRANCH" -f base="$default" \
+                   -f title="obsidian: update from vault" -f body="$body" --jq .number)
+            echo "Opened pull request #$pr."
+            check=true
+          elif [ -n "$new" ]; then
+            # Let the PR catch up with the new head, so the check reads and marks that commit.
+            i=0
+            until [ "$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)" = "$new" ]; do
+              i=$((i + 1))
+              if [ "$i" -ge 30 ]; then
+                echo "::warning::Pull request #$pr still shows an older head; checking anyway."; break
+              fi
+              sleep 2
+            done
+          fi
+
+          # A push from the vault to an open PR starts the check by itself (pull_request_target).
+          if [ "$check" = true ]; then
+            gh workflow run okf-lint.yml --repo "$REPO" --ref "$default" -f pr="$pr"
+            echo "Started the okf-lint check for #$pr."
+          fi

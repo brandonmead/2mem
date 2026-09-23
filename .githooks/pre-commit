@@ -1,0 +1,114 @@
+#!/bin/sh
+# 2mem pre-commit hook — check a commit before it is made.
+# Install once per clone:   git config core.hooksPath .githooks
+#
+# Runs the same _meta/okf-lint.py the required `okf-lint` pull-request check runs, plus the
+# content-loss guard (--base HEAD). This hook is a convenience: it fails where a fix is cheapest.
+# The enforcement is the required check on the pull request (conventions.md §7-§8), so
+# `git commit --no-verify` is a local shortcut, not a way around the gate.
+#
+# WHAT IS CHECKED: exactly what the commit will contain — the staged files (the index), not the
+# working folder. An unstaged edit neither fails nor excuses a commit.
+#
+# HOW, AND WHY IT CAN'T LOSE WORK: the index is copied out with `git checkout-index` into a
+# throwaway folder, which is turned into a throwaway git repo that borrows this repo's objects
+# read-only (objects/info/alternates), so `--base HEAD` can compare against the last commit.
+# The working folder, the index, and the stash are only read, never written. The obvious
+# alternative, `git stash --keep-index`, rewrites the working folder and has to put it back
+# afterwards; when that restore conflicts (for example after a partial `git add -p`) unstaged
+# work can be left in the stash or lost. Reading the index into a separate folder has no restore
+# step, so there is nothing to fail.
+#
+# ESCAPE HATCH for an intended loss (a deleted or renamed document, a body cut by 25% or more,
+# an edited original):   OKF_ALLOW_LOSS=1 git commit ...
+# The pull request will still need the `allow-loss` label; this only unblocks the local commit.
+
+fail() {
+    printf '%s\n' "" "pre-commit: $*" "Commit refused. Nothing was changed; your edits are still staged." >&2
+    exit 1
+}
+
+command -v python3 >/dev/null 2>&1 ||
+    fail "python3 was not found, so this commit cannot be checked. Install Python 3.8 or newer."
+
+# Hooks run at the top of the working tree, with the environment git set for this commit.
+# GIT_INDEX_FILE (set for `git commit -a` and `git commit <paths>`) is kept for the two commands
+# below, so they read the index this commit will actually be made from.
+objects=$(git rev-parse --git-path objects) || fail "could not locate this repository's objects."
+case $objects in /*) ;; *) objects="$(pwd)/$objects" ;; esac
+head=$(git rev-parse --verify --quiet HEAD)   # empty on the very first commit
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/okf-pre-commit.XXXXXX") || fail "could not create a temporary folder."
+trap 'rm -rf "$work"' EXIT
+trap 'exit 1' HUP INT TERM
+tree="$work/tree"
+mkdir "$tree"
+
+# 1. Copy the staged files out. Reads the index; writes only under $tree.
+git checkout-index --all --prefix="$tree/" || fail "could not read the staged files."
+
+# 2. Staged .md files — used only to focus the ADVICE (warnings, link suggestions) on this commit.
+#    The verdict never depends on this list: the linter reports every error in the tree whichever
+#    files are named, and ignores names that are not documents. core.quotePath=false keeps
+#    non-ASCII names literal instead of "\303\251"-quoted.
+staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR -- '*.md') ||
+    fail "could not list the staged files."
+
+# 3. Everything below must see only the throwaway repo, never this one.
+(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_NAMESPACE
+    cd "$tree" || exit 2
+    git init --quiet . &&
+        printf '%s\n' "$objects" > .git/objects/info/alternates &&
+        git add --all --force . || exit 2   # --force: a tracked file matching .gitignore is still content
+
+    [ -f _meta/okf-lint.py ] || { echo "pre-commit: _meta/okf-lint.py is not part of this commit." >&2; exit 2; }
+
+    # --root . (not "$tree"): the linter resolves names against the physical cwd, and on macOS
+    # $TMPDIR is under a symlink (/var -> /private/var), so a spelled-out root would not match.
+    set -- --root .
+    [ -n "$head" ] && set -- "$@" --base "$head"
+    [ "${OKF_ALLOW_LOSS:-}" = "1" ] && set -- "$@" --allow-loss
+
+    # One run: every error in the staged tree (the same verdict the pull-request check reaches),
+    # plus warnings and suggestions for the staged documents only. With nothing staged to advise
+    # on, errors only — unless OKF_ALLOW_LOSS=1, whose allowed losses are listed as warnings.
+    if [ -n "$staged" ]; then
+        old_ifs=$IFS
+        IFS='
+'
+        set -- "$@" --                                 # names only from here: a name may start with "-"
+        for p in $staged; do set -- "$@" "$p"; done   # one name per line; a stray space must not split one
+        IFS=$old_ifs
+    elif [ "${OKF_ALLOW_LOSS:-}" != "1" ]; then
+        set -- "$@" --quiet
+    fi
+    python3 _meta/okf-lint.py "$@"
+) > "$work/lint.log" 2>&1
+status=$?
+cat "$work/lint.log" >&2
+
+if [ "$status" -eq 2 ]; then
+    fail "the check could not run (see above)."
+elif [ "$status" -ne 0 ]; then
+    {
+        echo ""
+        echo "Commit refused: the staged documents do not pass the 2mem checks listed above."
+        echo "Nothing was changed; your edits are still staged. Fix each ERROR line, 'git add' the"
+        echo "fixed files, and commit again. (Only staged content is checked.)"
+        if [ "${OKF_ALLOW_LOSS:-}" != "1" ] && grep -q -- '--allow-loss' "$work/lint.log"; then
+            echo ""
+            echo "Some refusals are about removed content (a deleted or renamed document, a body cut"
+            echo "by 25% or more, or an edited original). If that loss is intended, commit with:"
+            echo "    OKF_ALLOW_LOSS=1 git commit ..."
+            echo "and add the 'allow-loss' label to the pull request."
+        fi
+    } >&2
+    exit 1
+fi
+
+if [ "${OKF_ALLOW_LOSS:-}" = "1" ] && grep -q 'allowed by --allow-loss' "$work/lint.log"; then
+    echo "pre-commit: content loss allowed by OKF_ALLOW_LOSS=1. The pull request needs the 'allow-loss' label." >&2
+fi
+exit 0
