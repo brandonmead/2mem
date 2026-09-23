@@ -244,8 +244,8 @@ Each: *do* → *expect*. Throwaway documents; remove them at the end (with `allo
 16. **Conflict** — edit the same line in the vault (PR open, held with `hold`) and via Claude
     (merged) → sync leaves `obsidian` as is; the PR comment gives the Obsidian conflict wording;
     **Resolve conflicts** on GitHub → green (remove `hold`) → merged; vault pulls cleanly.
-17. **Root note** — create `Untitled.md` at the vault root → PR green, held with the "move it into a
-    document folder" wording; move it into `concept/` in Obsidian → merged.
+17. **Root note** — create `Untitled.md` at the vault root → PR red with the "move it into the folder
+    of its type" error (conventions §11); move it into `concept/` in Obsidian → green → merged.
 18. **Rename** — rename a note that another note's `relates_to` points at → red: deleted document
     and unresolved `relates_to` path; fix the path by hand, add `allow-loss` → merged.
 19. **Branch kept** — on the merged vault PR, click **Delete branch** → refused.
