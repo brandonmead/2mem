@@ -681,6 +681,137 @@ def _nearest(word, known, weight=None):
     return best[1] if best else None
 
 
+class _NearestIndex:
+    """`_nearest(word, known, weight)` for many words against one fixed `known`, without comparing
+    every pair (1,000 singleton tags against each other took 12 s that way). Same answer, ties
+    included: every word within the limit is still found and scored by `_nearest` itself.
+
+    Pigeonhole: cut `word` into bound+1 pieces. An alignment within `bound` edits leaves some piece
+    untouched; take the last such piece, i. Every later piece holds an edit, so at most i edits come
+    before it, and it appears verbatim in the other word shifted by `s`, with |s| <= i and
+    |s| + |length difference - s| <= bound. So candidates are looked up by (piece, position,
+    length); a cheap lower bound discards most, and the rest are measured.
+    """
+
+    def __init__(self, known):
+        self.known = {str(k) for k in known}
+        self.by_len = {}
+        for k in self.known:
+            self.by_len.setdefault(len(k), []).append(k)
+        self.pieces = {}                     # piece length -> {(piece, position, length): [words]}
+        self.grams = {k: self._bigrams(k) for k in self.known}
+
+    def _index(self, m):
+        idx = self.pieces.get(m)
+        if idx is None:
+            idx = self.pieces[m] = {}
+            for k in self.known:
+                n = len(k)
+                for q in range(n - m + 1):
+                    idx.setdefault((k[q:q + m], q, n), []).append(k)
+        return idx
+
+    @staticmethod
+    def _bigrams(word):
+        """The word's bigrams as a set, repeats numbered, so & counts them as a multiset would."""
+        seen, out = {}, set()
+        for i in range(len(word) - 1):
+            b = word[i:i + 2]
+            seen[b] = seen.get(b, 0) + 1
+            out.add((b, seen[b]))
+        return frozenset(out)
+
+    def _candidates(self, word, bound):
+        n = len(word)
+        lengths = [n + d for d in range(-bound, bound + 1) if n + d in self.by_len]
+        close = sum(len(self.by_len[ln]) for ln in lengths)
+        if n <= bound or (bound + 1) ** 2 * len(lengths) > close:
+            # A piece would be empty, or the lookups would outnumber the words: take every word
+            # of a close enough length.
+            return {k for ln in lengths for k in self.by_len[ln]}
+        out = set()
+        size, extra = divmod(n, bound + 1)
+        p = 0
+        for i in range(bound + 1):
+            m = size + (i >= bound + 1 - extra)
+            piece, idx = word[p:p + m], self._index(m)
+            for ln in lengths:
+                d = ln - n
+                slack = (bound - abs(d)) // 2        # |s| + |d - s| <= bound
+                for q in range(max(-i, min(0, d) - slack, -p) + p,
+                               min(i, max(0, d) + slack, ln - m - p) + p + 1):
+                    hit = idx.get((piece, q, ln))
+                    if hit:
+                        out.update(hit)
+            p += m
+        return out
+
+    def nearest(self, word, weight=None):
+        # Widen the search one edit at a time: most typos lie within an edit or two, where the
+        # pieces are long and the lookups sharp. At each bound every candidate within it has been
+        # seen and measured, so `_nearest` over them picks what it would over all of `known`.
+        word = str(word)
+        limit = max(1, len(word) // 3)
+        grams, dist, bigrams, n = self._bigrams(word), _Distance(word), self.grams, len(word)
+        seen = {word}
+        waiting, found = {}, {}              # lower bound -> words; distance -> words
+        for bound in range(1, limit + 1):
+            fresh = self._candidates(word, bound) - seen
+            seen |= fresh
+            for k in fresh:
+                # A lower bound on the distance: the length difference, and the q-gram lemma —
+                # within e edits, two strings share at least max(len) - 1 - 2e bigrams (repeats
+                # counted).
+                low, top = len(k) - n, len(k)
+                if low < 0:
+                    low, top = -low, n
+                shared = len(grams & bigrams[k])
+                if top - shared > 2 * low:
+                    low = (top - shared) // 2    # = ceil((top - 1 - shared) / 2)
+                if low <= limit:
+                    waiting.setdefault(max(low, bound), []).append(k)
+            for k in waiting.pop(bound, ()):
+                found.setdefault(dist(k), []).append(k)
+            near = [k for d in range(bound + 1) for k in found.get(d, ())]
+            if near:
+                return _nearest(word, near, weight)
+        return None
+
+
+class _Distance:
+    """`_edit_distance(word, other)` for one word against many: Myers' bit-parallel algorithm, one
+    pass over `other` with the word's columns packed into an int (Hyyro 2001, global distance)."""
+
+    def __init__(self, word):
+        self.n = len(word)
+        self.mask = (1 << self.n) - 1
+        self.top = 1 << (self.n - 1) if word else 0
+        self.peq = {}
+        for i, c in enumerate(word):
+            self.peq[c] = self.peq.get(c, 0) | (1 << i)
+
+    def __call__(self, other):
+        if not self.n:
+            return len(other)
+        mask, top, peq = self.mask, self.top, self.peq
+        pv, mv, score = mask, 0, self.n
+        for c in other:
+            eq = peq.get(c, 0)
+            xv = eq | mv
+            xh = (((eq & pv) + pv) ^ pv) | eq
+            ph = mv | (mask & ~(xh | pv))
+            mh = pv & xh
+            if ph & top:
+                score += 1
+            elif mh & top:
+                score -= 1
+            ph = ((ph << 1) | 1) & mask
+            mh = (mh << 1) & mask
+            pv = mh | (mask & ~(xv | ph))
+            mv = ph & xv
+        return score
+
+
 def _did_you_mean(word, known):
     hint = _nearest(word, known)
     return " — did you mean '%s'?" % hint if hint else ""
@@ -1029,11 +1160,12 @@ def _tag_checks(docs, report):
         for tag in tags:
             if isinstance(tag, str) and TAG_RE.match(tag):
                 usage.setdefault(tag, set()).add(rel)
+    near = _NearestIndex(usage)
     for tag in sorted(usage):
         users = usage[tag]
         if len(users) != 1:
             continue
-        hint = _nearest(tag, usage, weight=lambda c: len(usage[c]))
+        hint = near.nearest(tag, weight=lambda c: len(usage[c]))
         msg = "tag '%s' is used by no other document" % tag
         if hint:
             msg += " — did you mean '%s' (used by %d)?" % (hint, len(usage[hint]))

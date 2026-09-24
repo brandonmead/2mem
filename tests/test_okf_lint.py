@@ -876,5 +876,52 @@ class TestLinearTime(LintCase):
                             for s in r["suggestions"]), "the scale repo produced no mentions")
         self.assertLess(elapsed, 15.0)
 
+    def test_tag_hints_equal_the_all_pairs_search(self):
+        """The indexed lookup behind tag hints returns exactly what `_nearest` does comparing
+        every pair — ties in distance and weight included."""
+        import random
+        mod = _load_linter()
+        rnd = random.Random(5)
+        for _ in range(300):
+            alphabet = rnd.choice(("ab", "ab-", "abcdefghij-",
+                                   "abcdefghijklmnopqrstuvwxyz0123456789-"))
+            known = {"".join(rnd.choice(alphabet) for _ in range(rnd.randint(1, 14)))
+                     for _ in range(rnd.randint(1, 40))}
+            weights = {k: rnd.randint(1, 3) for k in known}
+            index = mod._NearestIndex(known)
+            for word in sorted(known):
+                for weight in (None, weights.get):
+                    self.assertEqual(index.nearest(word, weight), mod._nearest(word, known, weight),
+                                     "%r in %r" % (word, sorted(known)))
+
+    def test_singleton_tags_scale(self):
+        """Each tag used once was compared with every other tag — O(tags²): 1,000 took 12 s and
+        this repo's 2,000 took over a minute. It now takes about a second."""
+        import itertools, random, time
+        rnd = random.Random(13)
+        words = ("garden budget travel insurance review plan notes kitchen repair school savings "
+                 "schedule checklist renewal bread tax health car house loan photo music book "
+                 "project client invoice family pet food energy water paint").split()
+        tags = ["-".join(p) for p in itertools.permutations(words, 3)]
+        tags = rnd.sample(tags, 2000)
+        tags[:50] = [t + "s" for t in tags[50:100]]            # near misses
+        for i in range(200):
+            self.write("concept/tagged-%03d.md" % i,
+                       "---\ntype: concept\ntitle: Tagged %03d\ndescription: Synthetic tag-scale "
+                       "document.\nstatus: draft\narea: home\ntags: [%s]\n---\n\n# Tagged %03d\n"
+                       % (i, ", ".join(tags[10 * i:10 * i + 10]), i))
+        t = time.monotonic()
+        r = self.lint()
+        elapsed = time.monotonic() - t
+        self.assertClean(r)
+        single = [w for w in r["warnings"] if "is used by no other document" in w["message"]]
+        self.assertEqual(len(single), 2000)
+        messages = {w["message"] for w in single}
+        for typo, tag in zip(tags[:50], tags[50:100]):
+            self.assertIn("tag '%s' is used by no other document — did you mean '%s' (used by 1)?"
+                          % (typo, tag), messages)
+        self.assertLess(elapsed, 15.0)
+
+
 if __name__ == "__main__":
     unittest.main()
