@@ -27,8 +27,9 @@ template into your own working instance.
 **Day to day, read [`setup/quickstart.md`](setup/quickstart.md):** how to ask Claude to remember or
 look something up, what happens to a change, and how to undo one.
 
-This repo is built to be used as a GitHub template ("Use this template" → your own private or public
-copy). Nothing you write into your copy is visible here.
+This repo is built to be used as a GitHub template ("Use this template" → your own **private**
+copy). This template repository itself is public; your copy holds personal notes, so keep it
+private. Nothing you write into your copy is visible here.
 
 ## Self-contained by design
 

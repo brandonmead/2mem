@@ -9,8 +9,8 @@ connector items). The workflow, hook and ruleset are checked offline by the test
 review; the items below are the parts only GitHub can confirm. A failed item uses its fallback;
 the fix lands as a governance PR.
 
-Needs: `gh` signed in as the owner; a second GitHub account (for the fork case); Claude with the
-GitHub connector for this repo. `OWNER/REPO` = your repository.
+Needs: `gh` signed in as the owner; a second GitHub account (for the fork cases, run on a public
+repository such as this template); Claude with the GitHub connector for this repo. `OWNER/REPO` = your repository.
 
 ---
 
@@ -24,9 +24,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: require the job's check run (`lint pull request`) instead, after confirming it
      appears on the PR head commit.
 
-2. **The ruleset imports as-is and is enforced** on the plan in use (public on Free; private on
-   Pro, or Team for an organisation). No `integration_id` is set, so anyone with write access
-   could post the status by hand — acceptable on a single-owner repo.
+2. **The ruleset imports as-is and is enforced** on the plan in use (a private instance on Pro,
+   or Team for an organisation; this public template repository on Free). No `integration_id` is
+   set, so anyone with write access could post the status by hand — acceptable on a single-owner
+   repo.
    - Test: web import and `gh api --method POST repos/OWNER/REPO/rulesets --input setup/ruleset.json`
      both succeed (delete one); B9 is refused.
    - Fallback: create the rules by hand from the SETUP §4 table. With more writers, pin the
@@ -90,8 +91,9 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: re-pin to the current v7 SHA; if the input is unknown, drop it and fetch
      `refs/pull/N/head` into `pr/` with plain `git fetch`.
 
-10. **Fork PRs are linted, never merged.** The fork head checks out as data, the status posts on
-    the fork's head SHA, and the merge job holds it.
+10. **Fork PRs are linted, never merged** (maintainer check on this public template repository;
+    instances are private, but anyone may still make theirs public). The fork head checks out as
+    data, the status posts on the fork's head SHA, and the merge job holds it.
     - Test: from the second account, fork, add a good document, open a PR: green, held comment
       "comes from a fork".
     - Fallback: if the fork checkout is refused, fork PRs show "could not run"; say in SETUP that
@@ -196,7 +198,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
     - Organisation-owned repository: the App is created and installed under the organisation
       (SETUP 9a); not yet tested live.
 
-### Public instance
+### Public repository (maintainers: this template repository)
+
+Instance setup is private-only, so this is a check on the public template repository, not a step
+in setting up an instance. It still covers anyone who makes their own copy public.
 
 25. **A fork cannot fake the required check.** A fork PR can add its own `pull_request` workflow
     with a job named `okf-lint`; its check run then carries the required check's name (while this
@@ -205,10 +210,11 @@ Each: **assumption** — *test* — *fallback if it fails*.
       pull_request`, one job named `okf-lint` that just succeeds) plus a bad document. With fork
       approval off, let it run: does the PR show the required `okf-lint` as passing, or blocked by
       the real failing status?
-    - Fallback: if the fake check run satisfies the rule, keep SETUP step 3's **Require approval
-      for all external contributors** (never approve a workflow change from a fork) — the fork's
-      workflow then never runs. `integration_id` alone does not help here: a fork's workflow also
-      reports as the GitHub Actions app. Fork PRs are never merged automatically either way.
+    - Fallback: if the fake check run satisfies the rule, set **Settings → Actions → General →
+      Approval for running fork pull request workflows** to **Require approval for all external
+      contributors** on the public repository (never approve a workflow change from a fork) — the
+      fork's workflow then never runs. `integration_id` alone does not help here: a fork's workflow
+      also reports as the GitHub Actions app. Fork PRs are never merged automatically either way.
 
 ### Actions minutes
 
