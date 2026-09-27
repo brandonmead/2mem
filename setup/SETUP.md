@@ -19,17 +19,19 @@ terminal except the optional steps for editing in a clone (6, 9c, 10).
 - **Fork** — someone else's copy of a repository; they can propose pull requests to yours from it.
 
 > **Public or private?** The write gate is a GitHub *ruleset*. Rulesets are free on **public**
-> repositories. On a **private** repository they need a paid plan (GitHub Pro, Team, or
-> Enterprise). A private repository on the Free plan still works, but nothing *enforces* the gate:
-> anyone with write access could change the main branch directly. Choose public only if you are
-> comfortable with everything you write being readable by anyone.
+> repositories. On a **private** repository they need a paid plan: GitHub Pro for a personal
+> account; Team or Enterprise for an organisation. A private repository on the Free plan still
+> works, but nothing *enforces* the gate: anyone with write access could change the main branch
+> directly. Choose public only if you are comfortable with everything you write being readable by
+> anyone.
 
 ---
 
 ## 1. Make your copy
 
 1. On this template's GitHub page, click **Use this template → Create a new repository**.
-2. Pick the owner (your account), a name, and **Public** or **Private** (see the box above).
+2. Pick the owner (your account, or an organisation — see the notes in steps 3, 9a and 10a), a
+   name, and **Public** or **Private** (see the box above).
    Leave **Include all branches** unticked.
 3. Click **Create repository**.
 
@@ -65,6 +67,9 @@ A template copies files only — not settings, rules, or labels. Steps 2–5 put
   you approve them.
 
 Click **Save** for each section you changed.
+
+**Organisation-owned repository:** a greyed-out option here is set for the whole organisation
+under **Organization settings → Actions → General**; ask an organisation owner to change it there.
 
 ## 4. Turn on the write gate (the ruleset)
 
@@ -240,6 +245,16 @@ token that is not fine-grained, reaches every repository you have.)
      permissions.
    - **Where can this GitHub App be installed?** **Only on this account.** Click **Create GitHub
      App**.
+
+   **Organisation-owned repository:** create the App under the organisation instead —
+   **Organization settings → Developer settings → GitHub Apps → New GitHub App**. An App created
+   under your personal account with **Only on this account** cannot be installed on an
+   organisation's repository. Keep **Only on this account** (it now means the organisation), and
+   in step 3 install it on the organisation with **Only select repositories**. Creating or
+   installing it needs an organisation owner, or someone an owner has made an App manager; your
+   organisation's third-party access policy may also need an owner to approve it. Like the rest of
+   this part, this is not yet confirmed on a live setup.
+
 2. On the App's page, copy the **Client ID**. Click **Generate a new client secret** and copy it —
    GitHub shows it only once.
 3. **Install App** (left menu) → your account → **Only select repositories** → choose this
@@ -291,6 +306,11 @@ vault on its next sync.
    requests**, so the vault's pull request can be opened for you. This is safe only while the
    ruleset requires **0 approvals** (step 4): if you ever require approvals, untick it, or the
    automation could supply an approval itself.
+
+   **Organisation-owned repository:** this box can be greyed out until an organisation owner
+   ticks the same option under **Organization settings → Actions → General → Workflow
+   permissions**. That only *allows* repositories to turn it on; then tick it here as usual.
+
 3. **Settings → Rules → Rulesets → New ruleset → Import a ruleset:** import
    [`setup/ruleset-obsidian.json`](ruleset-obsidian.json) (download it first, as in step 4). It
    stops the `obsidian` branch from being deleted or force-pushed (its history rewritten).

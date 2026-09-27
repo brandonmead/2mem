@@ -25,8 +25,8 @@ Each: **assumption** — *test* — *fallback if it fails*.
      appears on the PR head commit.
 
 2. **The ruleset imports as-is and is enforced** on the plan in use (public on Free; private on
-   Pro). No `integration_id` is set, so anyone with write access could post the status by hand —
-   acceptable on a single-owner repo.
+   Pro, or Team for an organisation). No `integration_id` is set, so anyone with write access
+   could post the status by hand — acceptable on a single-owner repo.
    - Test: web import and `gh api --method POST repos/OWNER/REPO/rulesets --input setup/ruleset.json`
      both succeed (delete one); B9 is refused.
    - Fallback: create the rules by hand from the SETUP §4 table. With more writers, pin the
@@ -121,6 +121,8 @@ Each: **assumption** — *test* — *fallback if it fails*.
     requests" is ticked.
     - Test: B13 — PR `obsidian: update from vault` opened by `github-actions[bot]`.
     - Fallback: a GitHub App token for the PR-opening call.
+    - Organisation-owned repository: an organisation owner must first allow the option at
+      organisation level, or the repository setting is greyed out (seen live; SETUP 10a).
 
 16. **A merge commit is allowed** by the ruleset (`allowed_merge_methods: [squash, merge]`) and the
     repo setting: `gh pr merge --merge --match-head-commit --subject` succeeds with no bypass.
@@ -181,6 +183,8 @@ Each: **assumption** — *test* — *fallback if it fails*.
       organization) that holds only this repository; a self-hosted GitHub MCP server with a
       fine-grained token limited to this repository. Never a connector with access to all
       repositories.
+    - Organisation-owned repository: the App is created and installed under the organisation
+      (SETUP 9a); not yet tested live.
 
 ### Public instance
 
