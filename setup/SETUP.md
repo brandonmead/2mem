@@ -384,26 +384,29 @@ minutes** a month on GitHub Free and **3,000** on GitHub Pro. Your GitHub accoun
 settings show how much you have used.
 
 GitHub counts each job separately and rounds each one **up to a whole minute**, however short. A
-change that passes and merges by itself runs three short jobs: the check, the merge, and the
-Obsidian sync (which just stops when there is no `obsidian` branch, but still counts). So:
+pull request that passes and merges by itself runs two short jobs, the check and the merge:
 
-- **each change that merges by itself costs about 3 minutes**, plus roughly 10% for re-checks (a
-  label added, a fix pushed after a failure) — call it **3.2 minutes**;
-- a pull request that fails the check costs about 1 minute per attempt;
-- a pull request that passes but is held for a person costs about 2 minutes per attempt, and when
-  a person merges it, about 2 more (a whole-repository check and the Obsidian sync);
-- editing in Obsidian adds a short job each time the vault syncs, and the check on the vault's pull
-  request runs again after each sync that changes it.
+- **each pull request that merges by itself costs about 2 minutes**, plus roughly 10% for
+  re-checks (a label added, a fix pushed after a failure): call it **2.2 minutes**. Claude puts
+  changes you ask for together into one pull request, so they cost the same as one;
+- **with Obsidian** (step 10, `OBSIDIAN_SYNC` set) each merge also updates the vault's branch:
+  about **3.2 minutes** each. Each time the vault syncs a change it costs about 4 minutes more,
+  however many notes changed (the vault syncs 10 minutes after you stop typing);
+- a pull request that fails the check costs about 1 minute per attempt; one that passes but waits
+  for a person about 2, and a person's merge about 1 more (2 with Obsidian). Pull requests that
+  change the rules or setup also run the repository's own tests, a few minutes more;
+- editing a pull request's title or description, or adding a label other than `hold` or
+  `allow-loss`, costs nothing.
 
-| Changes per month | About |
-|---|---|
-| 100 | 320 minutes |
-| 500 | 1,600 minutes |
-| 1,000 | 3,200 minutes |
+| Pull requests merged per month | Without Obsidian | With Obsidian |
+|---|---|---|
+| 100 | about 220 minutes | about 320 minutes |
+| 500 | about 1,100 minutes | about 1,600 minutes |
+| 1,000 | about 2,200 minutes | about 3,200 minutes |
 
-A private repository with fewer than about 600 changes a month stays inside the Free allowance;
-around 1,000 a month goes past the Pro one. If you come close, compare with the real figures
-in your billing settings.
+So a private repository stays inside the Free allowance up to about 900 pull requests a month
+(about 600 with Obsidian), and inside Pro up to about 1,300 (about 900 with Obsidian). If you come
+close, compare with the real figures in your billing settings.
 
 ## How the gate works (for the curious)
 
