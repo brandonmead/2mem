@@ -371,6 +371,35 @@ Files and links** and **Templates**.
 
 ---
 
+## Actions minutes (what the check costs)
+
+The check runs on GitHub Actions. In a **public** repository Actions minutes are free. In a
+**private** one they come out of a monthly allowance; at the time of writing that is **2,000
+minutes** a month on GitHub Free and **3,000** on GitHub Pro. Your GitHub account's billing
+settings show how much you have used.
+
+GitHub counts each job separately and rounds each one **up to a whole minute**, however short. A
+change that passes and merges by itself runs three short jobs: the check, the merge, and the
+Obsidian sync (which just stops when there is no `obsidian` branch, but still counts). So:
+
+- **each change that merges by itself costs about 3 minutes**, plus roughly 10% for re-checks (a
+  label added, a fix pushed after a failure) — call it **3.2 minutes**;
+- a pull request that fails the check costs about 1 minute per attempt;
+- a pull request that passes but is held for a person costs about 2 minutes per attempt, and when
+  a person merges it, about 2 more (a whole-repository check and the Obsidian sync);
+- editing in Obsidian adds a short job each time the vault syncs, and the check on the vault's pull
+  request runs again after each sync that changes it.
+
+| Changes per month | About |
+|---|---|
+| 100 | 320 minutes |
+| 500 | 1,600 minutes |
+| 1,000 | 3,200 minutes |
+
+A private repository with fewer than about 600 changes a month stays inside the Free allowance;
+around 1,000 a month goes past the Pro one. If you come close, compare with the real figures
+in your billing settings.
+
 ## How the gate works (for the curious)
 
 - **Every pull request** runs `.github/workflows/okf-lint.yml`. It uses the workflow and the
