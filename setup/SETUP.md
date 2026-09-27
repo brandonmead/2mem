@@ -18,12 +18,12 @@ terminal except the optional steps for editing in a clone (6, 9c, 10).
 - **Ruleset** — repository rules GitHub enforces, such as "changes to `main` only by pull request".
 - **Fork** — someone else's copy of a repository; they can propose pull requests to yours from it.
 
-> **Public or private?** The write gate is a GitHub *ruleset*. Rulesets are free on **public**
-> repositories. On a **private** repository they need a paid plan: GitHub Pro for a personal
-> account; Team or Enterprise for an organisation. A private repository on the Free plan still
-> works, but nothing *enforces* the gate: anyone with write access could change the main branch
-> directly. Choose public only if you are comfortable with everything you write being readable by
-> anyone.
+> **Make your copy private.** Your notes are personal, and anyone can read a public repository.
+>
+> The write gate is a GitHub *ruleset*. On a private repository, rulesets need a paid GitHub plan:
+> GitHub Pro for a personal account; Team or Enterprise for an organisation. On the Free plan
+> everything still works, but nothing *enforces* the gate: anyone with write access could change
+> the main branch directly. A free, enforced option for private repositories is being designed.
 
 ---
 
@@ -31,7 +31,7 @@ terminal except the optional steps for editing in a clone (6, 9c, 10).
 
 1. On this template's GitHub page, click **Use this template → Create a new repository**.
 2. Pick the owner (your account, or an organisation — see the notes in steps 3, 9a and 10a), a
-   name, and **Public** or **Private** (see the box above).
+   name, and **Private** (see the box above).
    Leave **Include all branches** unticked.
 3. Click **Create repository**.
 
@@ -61,10 +61,6 @@ A template copies files only — not settings, rules, or labels. Steps 2–5 put
   (read-only). The workflow asks, job by job, for exactly the extra access it needs.
 - **Allow GitHub Actions to create and approve pull requests** — leave **unticked**. The merge job
   *merges* pull requests; it never creates or approves one, so it does not need this.
-- **Public repository only:** under **Approval for running fork pull request workflows**, choose
-  **Require approval for all external contributors**. Anyone can propose a change to a public
-  repository from their own copy (a fork); this stops workflow files they add from running until
-  you approve them.
 
 Click **Save** for each section you changed.
 
@@ -140,6 +136,10 @@ request.
 ## 7. Check that it works
 
 Do all four. Each takes a minute or two; watch the pull request's **Checks** area and comments.
+
+(On the GitHub Free plan the ruleset is not enforced — see the box at the top — so in a and c
+GitHub also offers to commit directly to the main branch. Choose the pull request anyway; b and d
+behave as described.)
 
 **a. A good change merges by itself.**
 
@@ -314,6 +314,11 @@ vault on its next sync.
 3. **Settings → Rules → Rulesets → New ruleset → Import a ruleset:** import
    [`setup/ruleset-obsidian.json`](ruleset-obsidian.json) (download it first, as in step 4). It
    stops the `obsidian` branch from being deleted or force-pushed (its history rewritten).
+4. **Settings → Secrets and variables → Actions → Variables → New repository variable:** name
+   `OBSIDIAN_SYNC`, value `true`. This turns on the job that copies changes made elsewhere (Claude,
+   the web) onto the `obsidian` branch after each merge; instances that do not use Obsidian leave
+   it unset and are not charged Actions minutes for it. If you forget it, nothing is lost, but
+   those changes reach the vault only after your next change in Obsidian syncs.
 
 **b. The vault** (once per computer):
 
@@ -370,6 +375,37 @@ Files and links** and **Templates**.
   follow the comment: **Resolve conflicts** on GitHub, then the vault picks up the result.
 
 ---
+
+## Actions minutes (what the check costs)
+
+The check runs on GitHub Actions. In a private repository its minutes come out of a monthly
+allowance; at the time of writing that is **2,000 minutes** a month on GitHub Free and **3,000** on
+GitHub Pro. Your GitHub account's billing settings show how much you have used.
+
+GitHub counts each job separately and rounds each one **up to a whole minute**, however short. A
+pull request that passes and merges by itself runs two short jobs, the check and the merge:
+
+- **each pull request that merges by itself costs about 2 minutes**, plus roughly 10% for
+  re-checks (a label added, a fix pushed after a failure): call it **2.2 minutes**. Claude puts
+  changes you ask for together into one pull request, so they cost the same as one;
+- **with Obsidian** (step 10, `OBSIDIAN_SYNC` set) each merge also updates the vault's branch:
+  about **3.2 minutes** each. Each time the vault syncs a change it costs about 4 minutes more,
+  however many notes changed (the vault syncs 10 minutes after you stop typing);
+- a pull request that fails the check costs about 1 minute per attempt; one that passes but waits
+  for a person about 2, and a person's merge about 1 more (2 with Obsidian). Pull requests that
+  change the rules or setup also run the repository's own tests, a few minutes more;
+- editing a pull request's title or description, or adding a label other than `hold` or
+  `allow-loss`, costs nothing.
+
+| Pull requests merged per month | Without Obsidian | With Obsidian |
+|---|---|---|
+| 100 | about 220 minutes | about 320 minutes |
+| 500 | about 1,100 minutes | about 1,600 minutes |
+| 1,000 | about 2,200 minutes | about 3,200 minutes |
+
+So your repository stays inside the Free allowance up to about 900 pull requests a month
+(about 600 with Obsidian), and inside Pro up to about 1,300 (about 900 with Obsidian). If you come
+close, compare with the real figures in your billing settings.
 
 ## How the gate works (for the curious)
 

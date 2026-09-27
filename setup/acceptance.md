@@ -9,8 +9,8 @@ connector items). The workflow, hook and ruleset are checked offline by the test
 review; the items below are the parts only GitHub can confirm. A failed item uses its fallback;
 the fix lands as a governance PR.
 
-Needs: `gh` signed in as the owner; a second GitHub account (for the fork case); Claude with the
-GitHub connector for this repo. `OWNER/REPO` = your repository.
+Needs: `gh` signed in as the owner; a second GitHub account (for the fork cases, run on a public
+repository such as this template); Claude with the GitHub connector for this repo. `OWNER/REPO` = your repository.
 
 ---
 
@@ -24,9 +24,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: require the job's check run (`lint pull request`) instead, after confirming it
      appears on the PR head commit.
 
-2. **The ruleset imports as-is and is enforced** on the plan in use (public on Free; private on
-   Pro, or Team for an organisation). No `integration_id` is set, so anyone with write access
-   could post the status by hand — acceptable on a single-owner repo.
+2. **The ruleset imports as-is and is enforced** on the plan in use (a private instance on Pro,
+   or Team for an organisation; this public template repository on Free). No `integration_id` is
+   set, so anyone with write access could post the status by hand — acceptable on a single-owner
+   repo.
    - Test: web import and `gh api --method POST repos/OWNER/REPO/rulesets --input setup/ruleset.json`
      both succeed (delete one); B9 is refused.
    - Fallback: create the rules by hand from the SETUP §4 table. With more writers, pin the
@@ -64,17 +65,23 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: harmless either way (push lint is read-only). If a human merge does not trigger
      it, run the workflow by hand (**Run workflow**).
 
-7. **Label events re-run the check with current labels** (`labeled`/`unlabeled`; `allow-loss` is
-   read from the event), and `edited` re-runs it when the PR's base branch changes.
+7. **Label events re-run the check with current labels** (`labeled`/`unlabeled` of `hold` or
+   `allow-loss`; `allow-loss` is read from the event), and `edited` re-runs it when the PR's base
+   branch changes (`github.event.changes.base` is set). Any other label, and a title or
+   description edit, starts a run whose jobs are all skipped at job level (no runner).
    - Test: B5 — adding `allow-loss` turns red to green and merges; B12 — removing `hold` merges;
-     changing a PR's base branch starts a new run against the new base.
+     changing a PR's base branch starts a new run against the new base. On a held PR, add a label
+     such as `question` and edit the title: each run shows every job **skipped**, with no status
+     change.
    - Fallback: after changing a label, push an empty commit (a plain re-run reuses the old
      event, with the old labels).
 
 8. **A superseded run never leaves the status stuck.** `cancel-in-progress` cancels the older run;
    the newer run posts the final status for the same head.
    - Test: on a passing PR, add and remove `hold` within a few seconds: final status is not
-     `pending`, and the outcome (held or merged) matches the final labels.
+     `pending`, and the outcome (held or merged) matches the final labels. An ignored event (item
+     7) has a concurrency group of its own (`…-ignored-<run id>`): add a `question` label while a
+     check is running → that check is not cancelled and posts its status.
    - Fallback: drop `cancel-in-progress` so runs queue instead.
 
 9. **The pinned checkout (v7.0.1 by SHA) resolves, accepts `allow-unsafe-pr-checkout`, and with
@@ -84,8 +91,9 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: re-pin to the current v7 SHA; if the input is unknown, drop it and fetch
      `refs/pull/N/head` into `pr/` with plain `git fetch`.
 
-10. **Fork PRs are linted, never merged.** The fork head checks out as data, the status posts on
-    the fork's head SHA, and the merge job holds it.
+10. **Fork PRs are linted, never merged** (maintainer check on this public template repository;
+    instances are private, but anyone may still make theirs public). The fork head checks out as
+    data, the status posts on the fork's head SHA, and the merge job holds it.
     - Test: from the second account, fork, add a good document, open a PR: green, held comment
       "comes from a fork".
     - Fallback: if the fork checkout is refused, fork PRs show "could not run"; say in SETUP that
@@ -141,6 +149,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
     ./.github/workflows/obsidian.yml`, taken from the base branch, with the calling job's
     permissions).
     - Test: B14 — the merging run shows the job "update the obsidian branch" and it succeeds.
+      It runs only with the repository variable `OBSIDIAN_SYNC` = `true` (SETUP 10a): the
+      variable must be readable in the job's `if:` in both files, including inside the called
+      workflow. Without it (an instance not using Obsidian) the job shows **skipped**, and so does
+      obsidian.yml's run for a person's merge.
     - Fallback: replace the call with `gh workflow run obsidian.yml` in the merge job
       (`actions: write`).
 
@@ -186,7 +198,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
     - Organisation-owned repository: the App is created and installed under the organisation
       (SETUP 9a); not yet tested live.
 
-### Public instance
+### Public repository (maintainers: this template repository)
+
+Instance setup is private-only, so this is a check on the public template repository, not a step
+in setting up an instance. It still covers anyone who makes their own copy public.
 
 25. **A fork cannot fake the required check.** A fork PR can add its own `pull_request` workflow
     with a job named `okf-lint`; its check run then carries the required check's name (while this
@@ -195,10 +210,21 @@ Each: **assumption** — *test* — *fallback if it fails*.
       pull_request`, one job named `okf-lint` that just succeeds) plus a bad document. With fork
       approval off, let it run: does the PR show the required `okf-lint` as passing, or blocked by
       the real failing status?
-    - Fallback: if the fake check run satisfies the rule, keep SETUP step 3's **Require approval
-      for all external contributors** (never approve a workflow change from a fork) — the fork's
-      workflow then never runs. `integration_id` alone does not help here: a fork's workflow also
-      reports as the GitHub Actions app. Fork PRs are never merged automatically either way.
+    - Fallback: if the fake check run satisfies the rule, set **Settings → Actions → General →
+      Approval for running fork pull request workflows** to **Require approval for all external
+      contributors** on the public repository (never approve a workflow change from a fork) — the
+      fork's workflow then never runs. `integration_id` alone does not help here: a fork's workflow
+      also reports as the GitHub Actions app. Fork PRs are never merged automatically either way.
+
+### Actions minutes
+
+26. **A job skipped by its `if:` is not billed**, and each job that runs is billed rounded up to a
+    whole minute (the basis of SETUP's "Actions minutes" figures).
+    - Test: on a private instance, note the Actions usage, make a few content changes, an
+      unrelated label and a title edit, and compare the usage report: about 2 minutes per merged
+      change (3 with `OBSIDIAN_SYNC`), nothing for the label and title edit.
+    - Fallback: if skipped jobs are billed, the filters save nothing but cost nothing either;
+      correct the SETUP figures.
 
 ---
 

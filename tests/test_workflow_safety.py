@@ -10,7 +10,11 @@ SECURITY MODEL), so a later edit cannot quietly undo them:
   imported from the working directory or the script's folder;
 - no step changes into the pull request's checkout (`cd pr`, `working-directory: pr`);
 - no `run:` script contains `${{ }}`: expressions are expanded into the script text before bash
-  reads it, so event data there is code. Values reach scripts through `env:` only.
+  reads it, so event data there is code. Values reach scripts through `env:` only;
+- the job that reads the pull request never holds `contents: write`, and the job that holds it
+  never checks anything out (the lint/merge split: see okf-lint.yml's SECURITY MODEL);
+- the events the lint job ignores get a concurrency group of their own, so they never cancel a
+  real run (the two copies of that test must match).
 
 Text-based on purpose (stdlib only, no YAML library): comment lines are skipped, `run:` blocks are
 found by indentation.
@@ -62,6 +66,41 @@ def run_blocks(path):
     return blocks
 
 
+def job_block(path, job):
+    """The text of `jobs.<job>` (two-space indented job key), up to the next job."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    m = re.search(r"\n  %s:\n(.*?)(?=\n  [A-Za-z0-9_-]+:\n|\Z)" % re.escape(job), text, re.S)
+    return m.group(1) if m else ""
+
+
+def permissions_of(block):
+    """{scope: access} from the job's `permissions:` mapping."""
+    m = re.search(r"\n    permissions:\n((?:      [a-z-]+: [a-z]+.*\n)+)", "\n" + block + "\n")
+    return dict(re.findall(r"^      ([a-z-]+): ([a-z]+)", m.group(1), re.M)) if m else {}
+
+
+def folded(block, key, indent):
+    """A `key: >-` (or inline) value at `indent` spaces, joined into one line."""
+    lines = block.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith(" " * indent + key + ":"):
+            value = line.split(":", 1)[1].strip()
+            if value not in (">-", ">", "|"):
+                return value
+            body = []
+            for nxt in lines[i + 1:]:
+                if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                    break
+                body.append(nxt.strip())
+            return " ".join(b for b in body if b)
+    return ""
+
+
+def squash(s):
+    return re.sub(r"\s+", "", s)
+
+
 class TestWorkflowSafety(unittest.TestCase):
 
     def test_found_the_workflows_and_their_scripts(self):
@@ -96,6 +135,39 @@ class TestWorkflowSafety(unittest.TestCase):
         with open(os.path.join(WORKFLOWS, "okf-lint.yml"), encoding="utf-8") as fh:
             found = re.search(r"\n\s+PYTHONSAFEPATH: '1'\n", fh.read())
         self.assertTrue(found, "okf-lint.yml: set PYTHONSAFEPATH: '1' in the pull request job's env")
+
+    def test_lint_and_merge_jobs_keep_their_privileges_apart(self):
+        wf = os.path.join(WORKFLOWS, "okf-lint.yml")
+        lint, merge = job_block(wf, "okf-lint"), job_block(wf, "merge")
+        self.assertTrue(lint and merge, "okf-lint / merge jobs not found — did the layout change?")
+        self.assertEqual(permissions_of(lint),
+                         {"contents": "read", "pull-requests": "write", "statuses": "write"})
+        self.assertEqual(permissions_of(merge), {"contents": "write", "pull-requests": "write"})
+        self.assertNotIn("uses:", merge, "the merge job must not check anything out")
+        self.assertIn("--match-head-commit", merge)
+
+    def test_ignored_events_never_cancel_a_real_run(self):
+        wf = os.path.join(WORKFLOWS, "okf-lint.yml")
+        with open(wf, encoding="utf-8") as fh:
+            top = fh.read().split("\njobs:\n")[0]
+        group = folded(top.split("\nconcurrency:\n")[1], "group", 2)
+        job_if = folded(job_block(wf, "okf-lint"), "if", 4)
+        m = re.search(r"github\.ref,(\(.*\)\)\))&&format\('-ignored-\{0\}',github\.run_id\)",
+                      squash(group))
+        self.assertTrue(m, "concurrency group lost its per-run group for ignored events: %s" % group)
+        ignored = m.group(1)
+        self.assertIn("!" + ignored[len("(github.event_name=='pull_request_target'&&"):-1],
+                      squash(job_if), "the okf-lint job's `if:` and the concurrency group must "
+                      "ignore exactly the same events")
+        for label in ("'hold'", "'allow-loss'"):
+            self.assertIn(label, ignored)
+
+    def test_obsidian_sync_runs_only_where_the_vault_is_used(self):
+        wf = os.path.join(WORKFLOWS, "okf-lint.yml")
+        self.assertIn("vars.OBSIDIAN_SYNC == 'true'", folded(job_block(wf, "obsidian"), "if", 4))
+        sync_if = folded(job_block(os.path.join(WORKFLOWS, "obsidian.yml"), "sync"), "if", 4)
+        self.assertIn("vars.OBSIDIAN_SYNC == 'true'", sync_if)
+        self.assertIn("github.ref_name == 'obsidian'", sync_if)
 
 
 if __name__ == "__main__":

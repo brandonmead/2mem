@@ -8,8 +8,11 @@
 #                    otherwise say once why it is held. The `obsidian` branch's PR is merged with
 #                    a merge commit and the branch is kept (conventions.md §11).
 #                 -> job `obsidian`: after a merge, bring the `obsidian` branch up to date
-#                    (obsidian.yml; a no-op without that branch). Needed here because a merge made
-#                    with this workflow's token starts no `push` run.
+#                    (obsidian.yml). Needed here because a merge made with this workflow's token
+#                    starts no `push` run. Runs only when the repository variable OBSIDIAN_SYNC is
+#                    `true` (SETUP step 10a), so other instances are not billed for it.
+#                    Title/description edits and labels other than `hold` / `allow-loss` change
+#                    nothing the check or the merge reads, so they start no job at all.
 #   Manual run with `pr` -> the same two jobs for that PR. This is how obsidian.yml starts the check
 #                    on a PR it opened or updated: changes made with the workflow token raise no
 #                    pull_request event, and workflow_dispatch is the one event that token may start.
@@ -28,7 +31,10 @@
 # imported. The PR's file NAMES are data too: they reach
 # the linter only as separate argv entries after `--` (a NUL-delimited list, read one name at a
 # time), never through eval, word splitting, or the environment file. The token is handed only to
-# the steps that call the GitHub API, never to the step that reads PR content. A manual run with `pr` keeps all of
+# the steps that call the GitHub API, never to the step that reads PR content. That is not a hard
+# boundary (a job's token is shared by all its steps), so the job that reads PR content cannot write
+# to the repository: merging is a separate job that checks nothing out. Keep the two jobs apart,
+# although it costs one more billed minute per merge. A manual run with `pr` keeps all of
 # this: it runs only from the default branch, and reads the PR's number, head, base and labels
 # from the API instead of from an event.
 #
@@ -54,16 +60,30 @@ on:
 permissions: {}
 
 # One run per PR (or branch) at a time; a newer event supersedes an older run, so the status and
-# comment always describe the latest commit and labels.
+# comment always describe the latest commit and labels. An event the `okf-lint` job ignores (see its
+# `if:`; the same test is repeated here) gets a group of its own, so its empty run never cancels a
+# real one. Keep the two tests in step (tests/test_workflow_safety.py checks this).
 concurrency:
-  group: okf-lint-${{ github.event.pull_request.number || inputs.pr || github.ref }}
+  group: >-
+    ${{ format('okf-lint-{0}{1}',
+    github.event.pull_request.number || inputs.pr || github.ref,
+    (github.event_name == 'pull_request_target' &&
+    ((github.event.action == 'edited' && !github.event.changes.base) ||
+    ((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+    github.event.label.name != 'hold' && github.event.label.name != 'allow-loss')))
+    && format('-ignored-{0}', github.run_id) || '') }}
   cancel-in-progress: true
 
 jobs:
   okf-lint:
     name: lint pull request
+    # Skipped (no runner, not billed) for an `edited` event that did not change the base branch
+    # (a title or description edit) and for labels other than `hold` and `allow-loss`.
     if: >-
-      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' &&
+      !((github.event.action == 'edited' && !github.event.changes.base) ||
+      ((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+      github.event.label.name != 'hold' && github.event.label.name != 'allow-loss'))) ||
       (github.event_name == 'workflow_dispatch' && inputs.pr != '' &&
       github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
@@ -426,11 +446,12 @@ jobs:
           echo "Held:$reasons"
 
   # A merge made with this workflow's token starts no `push` run, so the obsidian branch is brought
-  # up to date from here (obsidian.yml does the same on a person's merge).
+  # up to date from here (obsidian.yml does the same on a person's merge). Only where the vault is
+  # used: without the variable the job is skipped, and the vault's next sync catches up instead.
   obsidian:
     name: update the obsidian branch
     needs: merge
-    if: needs.merge.outputs.merged == 'true'
+    if: needs.merge.outputs.merged == 'true' && vars.OBSIDIAN_SYNC == 'true'
     permissions:
       contents: write
       pull-requests: write
