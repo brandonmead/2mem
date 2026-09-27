@@ -7,6 +7,11 @@
 #   Called by okf-lint.yml after a merge     -> the same; that merge was made with the workflow's
 #                                               own token, which starts no `push` run.
 #
+# The two "bring up to date" triggers run only when the repository variable OBSIDIAN_SYNC is `true`
+# (SETUP step 10a); otherwise the job is skipped, so an instance without a vault is not billed for
+# it. Forgetting the variable loses nothing: the vault's next push finds `obsidian` behind or
+# diverged and brings it up to date then.
+#
 # Bringing `obsidian` up to date: fast-forward it when everything on it is already merged;
 # otherwise merge the default branch into it (GitHub's merge API). Nothing is ever force-pushed,
 # so no vault commit is lost. If both sides changed the same lines, nothing is merged: the check
@@ -31,6 +36,9 @@ permissions: {}
 jobs:
   sync:
     name: sync the obsidian branch
+    # A push to the default branch syncs only where the vault is used (see above). A push to
+    # `obsidian` and a manual run always sync; okf-lint.yml checks the variable before calling.
+    if: github.event_name != 'push' || github.ref_name == 'obsidian' || vars.OBSIDIAN_SYNC == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # One sync at a time, never cancelled half-way; each run re-reads the branches, so a queued

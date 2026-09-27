@@ -64,17 +64,23 @@ Each: **assumption** — *test* — *fallback if it fails*.
    - Fallback: harmless either way (push lint is read-only). If a human merge does not trigger
      it, run the workflow by hand (**Run workflow**).
 
-7. **Label events re-run the check with current labels** (`labeled`/`unlabeled`; `allow-loss` is
-   read from the event), and `edited` re-runs it when the PR's base branch changes.
+7. **Label events re-run the check with current labels** (`labeled`/`unlabeled` of `hold` or
+   `allow-loss`; `allow-loss` is read from the event), and `edited` re-runs it when the PR's base
+   branch changes (`github.event.changes.base` is set). Any other label, and a title or
+   description edit, starts a run whose jobs are all skipped at job level (no runner).
    - Test: B5 — adding `allow-loss` turns red to green and merges; B12 — removing `hold` merges;
-     changing a PR's base branch starts a new run against the new base.
+     changing a PR's base branch starts a new run against the new base. On a held PR, add a label
+     such as `question` and edit the title: each run shows every job **skipped**, with no status
+     change.
    - Fallback: after changing a label, push an empty commit (a plain re-run reuses the old
      event, with the old labels).
 
 8. **A superseded run never leaves the status stuck.** `cancel-in-progress` cancels the older run;
    the newer run posts the final status for the same head.
    - Test: on a passing PR, add and remove `hold` within a few seconds: final status is not
-     `pending`, and the outcome (held or merged) matches the final labels.
+     `pending`, and the outcome (held or merged) matches the final labels. An ignored event (item
+     7) has a concurrency group of its own (`…-ignored-<run id>`): add a `question` label while a
+     check is running → that check is not cancelled and posts its status.
    - Fallback: drop `cancel-in-progress` so runs queue instead.
 
 9. **The pinned checkout (v7.0.1 by SHA) resolves, accepts `allow-unsafe-pr-checkout`, and with
@@ -141,6 +147,10 @@ Each: **assumption** — *test* — *fallback if it fails*.
     ./.github/workflows/obsidian.yml`, taken from the base branch, with the calling job's
     permissions).
     - Test: B14 — the merging run shows the job "update the obsidian branch" and it succeeds.
+      It runs only with the repository variable `OBSIDIAN_SYNC` = `true` (SETUP 10a): the
+      variable must be readable in the job's `if:` in both files, including inside the called
+      workflow. Without it (an instance not using Obsidian) the job shows **skipped**, and so does
+      obsidian.yml's run for a person's merge.
     - Fallback: replace the call with `gh workflow run obsidian.yml` in the merge job
       (`actions: write`).
 
@@ -199,6 +209,16 @@ Each: **assumption** — *test* — *fallback if it fails*.
       for all external contributors** (never approve a workflow change from a fork) — the fork's
       workflow then never runs. `integration_id` alone does not help here: a fork's workflow also
       reports as the GitHub Actions app. Fork PRs are never merged automatically either way.
+
+### Actions minutes
+
+26. **A job skipped by its `if:` is not billed**, and each job that runs is billed rounded up to a
+    whole minute (the basis of SETUP's "Actions minutes" figures).
+    - Test: on a private instance, note the Actions usage, make a few content changes, an
+      unrelated label and a title edit, and compare the usage report: about 2 minutes per merged
+      change (3 with `OBSIDIAN_SYNC`), nothing for the label and title edit.
+    - Fallback: if skipped jobs are billed, the filters save nothing but cost nothing either;
+      correct the SETUP figures.
 
 ---
 

@@ -314,6 +314,11 @@ vault on its next sync.
 3. **Settings → Rules → Rulesets → New ruleset → Import a ruleset:** import
    [`setup/ruleset-obsidian.json`](ruleset-obsidian.json) (download it first, as in step 4). It
    stops the `obsidian` branch from being deleted or force-pushed (its history rewritten).
+4. **Settings → Secrets and variables → Actions → Variables → New repository variable:** name
+   `OBSIDIAN_SYNC`, value `true`. This turns on the job that copies changes made elsewhere (Claude,
+   the web) onto the `obsidian` branch after each merge; instances that do not use Obsidian leave
+   it unset and are not charged Actions minutes for it. If you forget it, nothing is lost, but
+   those changes reach the vault only after your next change in Obsidian syncs.
 
 **b. The vault** (once per computer):
 
